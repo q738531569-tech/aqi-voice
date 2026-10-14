@@ -104,9 +104,16 @@ TARGET_F0 = 230.0    # 生死线（≤226Hz 像她）：首发达标即收手，
 DEFAULT_INSTRUCT = '用低沉磁性的御姐声线说话，音调刻意压低'
 
 
+TARGET_RMS = 0.075   # 响度锁定目标（≈-22.5 dBFS）：治模型音量忽大忽小
+
+
 def _pcm16_wav(audio_f32, sr):
     import numpy as np
-    audio = np.clip(np.asarray(audio_f32, dtype=np.float32), -1.0, 1.0)
+    audio = np.asarray(audio_f32, dtype=np.float32)
+    rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+    if rms > 1e-6:
+        audio = audio * (TARGET_RMS / rms)
+    audio = np.clip(audio, -1.0, 1.0)
     pcm = (audio * 32767.0).astype('<i2')
     buf = io.BytesIO()
     with wave.open(buf, 'wb') as w:
