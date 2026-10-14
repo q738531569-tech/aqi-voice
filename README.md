@@ -64,7 +64,7 @@ Qwen3-TTS-12Hz-0.6B 微调 checkpoint（speaker=aqi_e）
 4. `bash train/e_infer.sh` + `python train/measure_f0.py`：多 epoch 出样、测中位音高挑 checkpoint
 5. 把选中的 checkpoint 放到 `server/model/`，speaker 名同步 `AQI_SPEAKER`
 
-## 已知坑（都替你踩过了）
+## 已知坑
 
 - `transformers` 5.19 与 qwen-tts-hf 不兼容 → 钉 **5.15.1**
 - Electron 宿主环境的 TEMP 可能不可用 → 服务开头写死专属 temp（脚本已内置）
