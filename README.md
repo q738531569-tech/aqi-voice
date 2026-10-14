@@ -39,8 +39,9 @@ Qwen3-TTS-12Hz-0.6B 微调 checkpoint（speaker=aqi_e）
    ```bash
    pip install -r server/requirements.txt
    ```
-3. **下载权重**：从 [Releases](../../releases) 下载 `aqi-voice-model.zip`，解压到 `server/model/`
-   （目录里应直接可见 `model.safetensors` 与 `speech_tokenizer/`）。
+3. **下载权重**：从 [Releases](../../releases) 下载 **两个** zip（GitHub 单文件 2G 限制故拆分）：
+   `aqi-voice-model-main.zip` 与 `aqi-voice-model-speech-tokenizer.zip`，
+   **都解压到 `server/model/`**（解压后目录里应直接可见 `model.safetensors` 与 `speech_tokenizer/`）。
 4. **起服务**（或跳过，见下一步由插件自动拉起）：
    ```bash
    python server/qwen_aqi_server.py --preload
