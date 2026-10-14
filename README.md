@@ -28,6 +28,7 @@ Qwen3-TTS-12Hz-0.6B 微调 checkpoint（speaker=aqi_e）
   端口探活防重复拉起（spawn 风暴免疫）
 - `server/` —— CosyVoice 协议服务（`/health` `/tts` `/voices`），路径全部 env 可配
 - `train/` —— 云端微调流水线脚本（数据 jsonl 过采样、lr 补丁、训练/推理、f0 测量）
+- `persona.md` —— 阿七说话风格 prompt（音色+说话风格是一套，贴进系统提示即用）
 
 ## 快速开始（Windows + NVIDIA GPU，≥8GB 显存）
 
