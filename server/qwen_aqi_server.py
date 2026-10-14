@@ -237,12 +237,31 @@ def _active_rms(a, sr):
 
 
 MAX_GAIN = 4.0  # 增益封顶：探针段异常轻时也不许无限放大
+MIN_PROBE_RMS = 0.015  # 探针段活跃响度下限：低于此=静音/纯气声，增益不可信
+MIN_SYL = 5  # 探针段音节下限：2.5s 正常 8~12 音节，拖音慢速仅 2~4，低于此重打
+
+
+def _syllable_est(a, sr):
+    """能量包络音节计数：连续活跃帧段=一个音节（免费近似，治慢速拖音）。"""
+    import numpy as np
+    a = np.asarray(a, dtype=np.float32)
+    fl = max(1, int(sr * 0.02))
+    n = len(a) // fl
+    if n < 5:
+        return 0
+    frames = a[:n * fl].reshape(n, fl)
+    fr = np.sqrt(np.mean(np.square(frames), axis=1))
+    voiced = fr > float(fr.max()) * 0.3
+    return int(np.sum(voiced[1:] & ~voiced[:-1]))
 
 
 def _gain_for(whole, sr):
     import numpy as np
     rms = _active_rms(whole, sr)
     peak = float(np.max(np.abs(whole))) if len(whole) else 1.0
+    if rms < MIN_PROBE_RMS:
+        # 探针段近乎静音：拿它定增益会把后段炸响，干脆不放大
+        return 1.0, rms
     # 三重限：目标响度 / 封顶 / 峰保护（探针段峰不许越过 0.95，防模型原声削波）
     gain = min(TARGET_RMS / max(rms, 1e-4), MAX_GAIN, 0.95 / max(peak, 1e-4))
     return gain, rms
@@ -284,9 +303,14 @@ def synth_stream(text, seed=0, instruct=None, temperature=None, probe=True):
                     if sr and acc >= int(PROBE_SEC * sr):
                         whole = np.concatenate(buf)
                         f0 = _f0_of(whole, sr)
+                        rms_p = _active_rms(whole, sr)
+                        syl = _syllable_est(whole, sr)
                         log(f'  stream probe {attempt}/{max_attempts}: '
-                            f'f0={f0:.0f}Hz in {time.time() - t0:.1f}s')
-                        if f0 <= PROBE_TARGET or last:
+                            f'f0={f0:.0f}Hz rms={rms_p:.4f} syl={syl} '
+                            f'in {time.time() - t0:.1f}s')
+                        ok = (f0 <= PROBE_TARGET and rms_p >= MIN_PROBE_RMS
+                              and syl >= MIN_SYL)
+                        if ok or last:
                             gain, rms = _gain_for(whole, sr)
                             log(f'  gain={gain:.2f} rms={rms:.4f}')
                             state = 'pass'
@@ -300,8 +324,11 @@ def synth_stream(text, seed=0, instruct=None, temperature=None, probe=True):
                     if state == 'probe' and buf:
                         whole = np.concatenate(buf)
                         f0 = _f0_of(whole, sr) if sr else float('inf')
-                        log(f'  stream short {attempt}: f0={f0:.0f}Hz')
-                        if f0 <= PROBE_TARGET or last:
+                        rms_p = _active_rms(whole, sr) if sr else 0.0
+                        log(f'  stream short {attempt}: f0={f0:.0f}Hz '
+                            f'rms={rms_p:.4f}')
+                        if ((f0 <= PROBE_TARGET and rms_p >= MIN_PROBE_RMS)
+                                or last):
                             gain, rms = _gain_for(whole, sr)
                             log(f'  gain={gain:.2f} rms={rms:.4f}')
                             for b in buf:
