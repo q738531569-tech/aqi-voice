@@ -98,7 +98,7 @@ def idle_watchdog():
                     unload_model()
 
 
-BEST_OF_DEFAULT = 1  # 用户实测抽卡等待偏长→关双发单发直出（RTF 0.49，低音靠 instruct）
+BEST_OF_DEFAULT = 2  # 双候选挑最低音（/tts 可传 best_of 覆盖）；TARGET_F0 提前收手兜底
 TARGET_F0 = 230.0    # 生死线（≤226Hz 像她）：首发达标即收手，平均省 ~30% 时间
 # 插件 UI 没有 instruct 字段，服务端内置默认压低指令（免费降 ~15Hz）
 DEFAULT_INSTRUCT = '用低沉磁性的御姐声线说话，音调刻意压低'

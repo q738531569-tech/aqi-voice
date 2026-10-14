@@ -69,6 +69,8 @@ Qwen3-TTS-12Hz-0.6B 微调 checkpoint（speaker=aqi_e）
 - Electron 宿主环境的 TEMP 可能不可用 → 服务开头写死专属 temp（脚本已内置）
 - 句级分块会导致**块间音色漂移** → 整段生成（RTF 够快，不需要分块）
 - 采样温度调低音高不可行（实测 0.3 出气声）→ 低音靠 instruct 指令
+- 本服务的 `best_of`（抽卡挑最低音）可被 `/tts` 请求体覆盖；dsh-plugin-tts 上游暂无此设置项，
+  本仓库用法是在其 CosyVoice 面板加「抽卡次数」输入（patch `client.js`/`index.mjs` 各一处，向 `best_of` 字段透传即可）
 
 ## License
 
