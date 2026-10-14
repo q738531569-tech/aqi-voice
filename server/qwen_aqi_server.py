@@ -182,6 +182,116 @@ def synth_wav(text, seed=0, best_of=BEST_OF_DEFAULT, instruct=None, temperature=
     return best[1], best[2]
 
 
+# ---------------- 流式合成（边生成边出声 + 首段探针重打） ----------------
+PROBE_SEC = 2.5        # 探针段：攒够 2.5s 音频立刻测 f0，超标丢弃重打（只浪费探针段）
+PROBE_TARGET = 330.0   # 首发达标线（按你的模型本地 f0 分布校准：服务日志 candidate 行采样）
+
+
+def _wav_header(sr, bits=16, channels=1):
+    """流式 wav 头：RIFF/data 尺寸填 0xFFFFFFFF（未知长度，播放器按流处理）。"""
+    import struct
+    byte_rate = sr * channels * bits // 8
+    return (b'RIFF' + struct.pack('<I', 0xFFFFFFFF) + b'WAVEfmt '
+            + struct.pack('<IHHIIHH', 16, 1, channels, sr, byte_rate,
+                          channels * bits // 8, bits)
+            + b'data' + struct.pack('<I', 0xFFFFFFFF))
+
+
+def _f0_of(audio, sr):
+    """对 PCM float 数组测中位音高（探针用，失败返回 +inf 不放过）。"""
+    try:
+        import numpy as np
+        import librosa
+        y = librosa.resample(np.asarray(audio, dtype=np.float32),
+                             orig_sr=int(sr), target_sr=16000)
+        y = y[int(len(y) * 0.06):]  # 跳过起音瞬态
+        f0, _v, _ = librosa.pyin(y, fmin=80, fmax=500, frame_length=1024)
+        f0v = f0[~np.isnan(f0)]
+        if len(f0v) < 10:
+            return float('inf')
+        return float(np.median(f0v))
+    except Exception:  # noqa: BLE001
+        return float('inf')
+
+
+def _pcm16_bytes(a, gain):
+    import numpy as np
+    return (np.clip(np.asarray(a, dtype=np.float32) * gain, -1.0, 1.0)
+            * 32767.0).astype('<i2').tobytes()
+
+
+def synth_stream(text, seed=0, instruct=None, temperature=None, probe=True):
+    """流式合成：yield (sr, pcm16_bytes) 逐块。probe=True 时首段测 f0，
+    ≤PROBE_TARGET 直接放行；超标丢弃重打（最多 2 发，末发无条件放行）。
+    响度锁定：探针段定增益，全段一致。"""
+    global _last_used
+    import numpy as np
+    import torch
+    max_attempts = 2 if probe else 1
+    for attempt in range(1, max_attempts + 1):
+        last = (attempt == max_attempts)
+        with _lock:
+            load_model()
+            _last_used = time.time()
+            if seed:
+                torch.manual_seed(int(seed) + attempt - 1)
+            kwargs = {}
+            if instruct:
+                kwargs['instruct'] = str(instruct)
+            if temperature:
+                kwargs['temperature'] = float(temperature)
+            t0 = time.time()
+            gen = _model.generate_custom_voice_streaming(
+                text=text, speaker=SPEAKER, language=LANGUAGE, **kwargs)
+            buf, acc, sr, gain = [], 0, None, None
+            state = 'probe' if probe else 'pass'
+            try:
+                for audio, sr, _timing in gen:
+                    a = np.asarray(audio, dtype=np.float32).reshape(-1)
+                    if state == 'pass':
+                        yield sr, _pcm16_bytes(a, gain)
+                        continue
+                    buf.append(a)
+                    acc += a.size
+                    if sr and acc >= int(PROBE_SEC * sr):
+                        whole = np.concatenate(buf)
+                        f0 = _f0_of(whole, sr)
+                        log(f'  stream probe {attempt}/{max_attempts}: '
+                            f'f0={f0:.0f}Hz in {time.time() - t0:.1f}s')
+                        if f0 <= PROBE_TARGET or last:
+                            rms = float(np.sqrt(np.mean(np.square(whole))))
+                            gain = TARGET_RMS / max(rms, 1e-4)
+                            state = 'pass'
+                            for b in buf:
+                                yield sr, _pcm16_bytes(b, gain)
+                            buf = []
+                        else:
+                            break  # 超标：丢弃整发重打
+                else:
+                    # 生成结束仍未触发探针（短句）：整段测
+                    if state == 'probe' and buf:
+                        whole = np.concatenate(buf)
+                        f0 = _f0_of(whole, sr) if sr else float('inf')
+                        log(f'  stream short {attempt}: f0={f0:.0f}Hz')
+                        if f0 <= PROBE_TARGET or last:
+                            rms = float(np.sqrt(np.mean(np.square(whole))))
+                            gain = TARGET_RMS / max(rms, 1e-4)
+                            for b in buf:
+                                yield sr, _pcm16_bytes(b, gain)
+                            state = 'pass'
+                        else:
+                            break
+                    elif state == 'probe':
+                        break  # 空音频重试
+                if state == 'pass':
+                    _last_used = time.time()
+                    log(f'stream done {len(text)} chars attempt={attempt} '
+                        f'in {time.time() - t0:.1f}s')
+                    return
+            finally:
+                gen.close()  # 客户端断开/重试时释放 GPU 锁
+
+
 def list_voices():
     if not os.path.isdir(PROMPT_DIR):
         return []
@@ -244,14 +354,57 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get('Content-Length') or 0)
         return self.rfile.read(n) if n else b''
 
+    def _stream_wav(self, text, seed, instruct, temperature, probe):
+        """把 synth_stream 逐块写成 wav 裸流（无 Content-Length，连接关闭收尾）。"""
+        gen = None
+        head = True
+        try:
+            gen = synth_stream(text, seed, instruct, temperature, probe)
+            for sr, pcm in gen:
+                if head:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'audio/wav')
+                    self.end_headers()
+                    self.wfile.write(_wav_header(sr))
+                    head = False
+                self.wfile.write(pcm)
+            if head:
+                self._json(500, {'ok': False, 'message': 'no audio'})
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # 客户端提前挂断属正常
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            if head:
+                try:
+                    self._json(500, {'ok': False, 'message': str(e)})
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            if gen is not None:
+                gen.close()  # 释放 GPU 锁
+
     def do_GET(self):
         path = self.path.split('?')[0]
         if path == '/health':
             self._json(200, {'ok': True, 'engine': 'qwen3-tts-aqi',
                              'model_loaded': _model is not None,
-                             'speaker': SPEAKER})
+                             'speaker': SPEAKER, 'stream': True})
         elif path == '/voices':
             self._json(200, {'voices': list_voices()})
+        elif path == '/tts/stream':
+            # GET 版流式：<audio src> 只能 GET，query 传参（DSH 插件 302 透传用）
+            from urllib.parse import parse_qs
+            q = parse_qs(self.path.split('?')[1] if '?' in self.path else '')
+            text = (q.get('text') or [''])[0].strip()
+            if not text:
+                self._json(400, {'ok': False, 'message': 'empty text'})
+                return
+            seed = int((q.get('seed') or ['0'])[0] or 0)
+            probe = (q.get('probe') or ['1'])[0] != '0'
+            instruct = (q.get('instruct') or [''])[0] or DEFAULT_INSTRUCT
+            temperature = (q.get('temperature') or [''])[0] or None
+            self._stream_wav(text, seed, instruct, temperature, probe)
         else:
             self._json(404, {'error': 'not found'})
 
@@ -293,6 +446,24 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._json(500, {'ok': False, 'message': str(e)})
+        elif path == '/tts/stream':
+            # 流式 POST 版（与 GET 同逻辑，供非 <audio> 客户端用）
+            try:
+                req = json.loads(body.decode('utf-8')) if body else {}
+            except json.JSONDecodeError:
+                self._json(400, {'ok': False, 'message': 'bad json'})
+                return
+            text = str(req.get('text') or '').strip()
+            if not text:
+                self._json(400, {'ok': False, 'message': 'empty text'})
+                return
+            seed = int(req.get('seed') or 0)
+            instruct = req.get('instruct')
+            if instruct is None:
+                instruct = DEFAULT_INSTRUCT
+            temperature = req.get('temperature') or None
+            probe = bool(int(req.get('probe') if req.get('probe') is not None else 1))
+            self._stream_wav(text, seed, instruct, temperature, probe)
         elif path == '/load':
             # 兼容 RVC 风格预热调用
             try:
