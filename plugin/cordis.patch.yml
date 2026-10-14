@@ -1,0 +1,4 @@
+# aqi-tts-service bundle: 阿七 TTS 服务生命周期伴生插件（Host 路由 + client 开关监听）。
+- insert:
+    - id: aqi-tts-service
+      name: aqi-tts-service

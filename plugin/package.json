@@ -1,0 +1,28 @@
+{
+  "name": "aqi-tts-service",
+  "version": "0.2.1",
+  "description": "阿七音色服务伴生插件：跟随「自动朗读」开关自动拉起/停止本地 TTS 服务（CosyVoice 协议 :7890），配合 dsh-plugin-tts 使用",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": {
+      "default": "./lib/index.mjs"
+    },
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "license": "MIT"
+}

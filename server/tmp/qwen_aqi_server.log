@@ -1,0 +1,5 @@
+13:16:15 [aqi-tts] ckpt=F:\Reasonix_work\myslf\_aqi\model\aqi_E_ep3
+13:16:15 [aqi-tts] prompts=F:\Reasonix_work\myslf\aqi-voice\server\prompts (0 voices)
+13:16:16 [aqi-tts] loading model from F:\Reasonix_work\myslf\_aqi\model\aqi_E_ep3 ...
+13:16:28 [aqi-tts] model loaded in 11.5s
+13:16:28 [aqi-tts] serving http://127.0.0.1:7891 (CosyVoice-compatible)

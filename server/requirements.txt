@@ -1,0 +1,5 @@
+# 需先按 CUDA 版本自装 torch（README 有说明）
+faster-qwen3-tts==0.5.4
+transformers==5.15.1
+librosa
+soundfile
