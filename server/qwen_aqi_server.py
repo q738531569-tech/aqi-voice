@@ -110,9 +110,11 @@ TARGET_RMS = 0.075   # 响度锁定目标（≈-22.5 dBFS）：治模型音量�
 def _pcm16_wav(audio_f32, sr):
     import numpy as np
     audio = np.asarray(audio_f32, dtype=np.float32)
-    rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+    # 响度归一：活跃帧响度拉到固定档（气声段不拉增益），峰保护+封顶兜底防爆音
+    rms = _active_rms(audio, int(sr)) if audio.size else 0.0
     if rms > 1e-6:
-        audio = audio * (TARGET_RMS / rms)
+        peak = float(np.max(np.abs(audio))) if audio.size else 1.0
+        audio = audio * min(TARGET_RMS / rms, MAX_GAIN, 0.95 / max(peak, 1e-4))
     audio = np.clip(audio, -1.0, 1.0)
     pcm = (audio * 32767.0).astype('<i2')
     buf = io.BytesIO()
@@ -220,6 +222,32 @@ def _pcm16_bytes(a, gain):
             * 32767.0).astype('<i2').tobytes()
 
 
+def _active_rms(a, sr):
+    """活跃帧响度：最响一半帧的 RMS——气声/静音段不拉高增益（防炸麦）。"""
+    import numpy as np
+    a = np.asarray(a, dtype=np.float32)
+    fl = max(1, int(sr * 0.05))
+    n = len(a) // fl
+    if n < 4:
+        return float(np.sqrt(np.mean(np.square(a)))) if len(a) else 1e-4
+    frames = a[:n * fl].reshape(n, fl)
+    fr = np.sqrt(np.mean(np.square(frames), axis=1))
+    active = np.sort(fr)[n // 2:]
+    return float(np.sqrt(np.mean(np.square(active))))
+
+
+MAX_GAIN = 4.0  # 增益封顶：探针段异常轻时也不许无限放大
+
+
+def _gain_for(whole, sr):
+    import numpy as np
+    rms = _active_rms(whole, sr)
+    peak = float(np.max(np.abs(whole))) if len(whole) else 1.0
+    # 三重限：目标响度 / 封顶 / 峰保护（探针段峰不许越过 0.95，防模型原声削波）
+    gain = min(TARGET_RMS / max(rms, 1e-4), MAX_GAIN, 0.95 / max(peak, 1e-4))
+    return gain, rms
+
+
 def synth_stream(text, seed=0, instruct=None, temperature=None, probe=True):
     """流式合成：yield (sr, pcm16_bytes) 逐块。probe=True 时首段测 f0，
     ≤PROBE_TARGET 直接放行；超标丢弃重打（最多 2 发，末发无条件放行）。
@@ -259,8 +287,8 @@ def synth_stream(text, seed=0, instruct=None, temperature=None, probe=True):
                         log(f'  stream probe {attempt}/{max_attempts}: '
                             f'f0={f0:.0f}Hz in {time.time() - t0:.1f}s')
                         if f0 <= PROBE_TARGET or last:
-                            rms = float(np.sqrt(np.mean(np.square(whole))))
-                            gain = TARGET_RMS / max(rms, 1e-4)
+                            gain, rms = _gain_for(whole, sr)
+                            log(f'  gain={gain:.2f} rms={rms:.4f}')
                             state = 'pass'
                             for b in buf:
                                 yield sr, _pcm16_bytes(b, gain)
@@ -274,8 +302,8 @@ def synth_stream(text, seed=0, instruct=None, temperature=None, probe=True):
                         f0 = _f0_of(whole, sr) if sr else float('inf')
                         log(f'  stream short {attempt}: f0={f0:.0f}Hz')
                         if f0 <= PROBE_TARGET or last:
-                            rms = float(np.sqrt(np.mean(np.square(whole))))
-                            gain = TARGET_RMS / max(rms, 1e-4)
+                            gain, rms = _gain_for(whole, sr)
+                            log(f'  gain={gain:.2f} rms={rms:.4f}')
                             for b in buf:
                                 yield sr, _pcm16_bytes(b, gain)
                             state = 'pass'
