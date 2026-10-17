@@ -402,6 +402,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
+        self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(body)
 
@@ -417,6 +418,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'audio/wav')
+            # 长文分块走 WebAudio fetch(url)（跨端口），必须带 CORS 头，
+            # 否则浏览器报 Failed to fetch（<audio> 播放不受此限制）
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(_wav_header(24000))
             gen = synth_stream(text, seed, instruct, temperature, probe)
