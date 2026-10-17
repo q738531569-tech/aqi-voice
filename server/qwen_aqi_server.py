@@ -410,31 +410,24 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n) if n else b''
 
     def _stream_wav(self, text, seed, instruct, temperature, probe):
-        """把 synth_stream 逐块写成 wav 裸流（无 Content-Length，连接关闭收尾）。"""
+        """把 synth_stream 逐块写成 wav 裸流（无 Content-Length，连接关闭收尾）。
+        响应头+wav 头**立即发出**（sr=24000 固定）：排队等 GPU 锁期间客户端
+        也有响应，长文切块并发时不会被浏览器掐成 Failed to fetch。"""
         gen = None
-        head = True
         try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'audio/wav')
+            self.end_headers()
+            self.wfile.write(_wav_header(24000))
             gen = synth_stream(text, seed, instruct, temperature, probe)
             for sr, pcm in gen:
-                if head:
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'audio/wav')
-                    self.end_headers()
-                    self.wfile.write(_wav_header(sr))
-                    head = False
                 self.wfile.write(pcm)
-            if head:
-                self._json(500, {'ok': False, 'message': 'no audio'})
         except (BrokenPipeError, ConnectionResetError):
             pass  # 客户端提前挂断属正常
         except Exception as e:  # noqa: BLE001
             import traceback
             traceback.print_exc()
-            if head:
-                try:
-                    self._json(500, {'ok': False, 'message': str(e)})
-                except Exception:  # noqa: BLE001
-                    pass
+            # 头已发出无法再报 JSON：截断收尾，客户端按短音频解码
         finally:
             if gen is not None:
                 gen.close()  # 释放 GPU 锁
