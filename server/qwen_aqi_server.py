@@ -143,12 +143,38 @@ def _median_f0(wav_bytes):
         return float('inf')
 
 
+# --- 文本归一化：非中文元素是 0.6B 微调模型的嘴瓢重灾区 ---------------------
+# 剥 Markdown 语法、去 emoji、数字转中文读法（逐位）；英文保留（模型会读，
+# 只是带口音——模型能力边界，不硬修）。~ 保留（语料句尾常用）。
+_DIGITS = '零一二三四五六七八九'
+
+
+def _normalize_text(text):
+    import re
+    t = str(text or '')
+    t = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', t)      # 链接留文字
+    t = re.sub(r'`{1,3}([^`]*)`{1,3}', r'\1', t)         # 行内/块代码
+    t = re.sub(r'\*\*(.+?)\*\*', r'\1', t, flags=re.S)   # 粗体
+    t = re.sub(r'(?<!\w)[*_](?!\s)(.+?)[*_](?!\w)', r'\1', t, flags=re.S)  # 斜体
+    t = re.sub(r'^#{1,6}\s+', '', t, flags=re.M)         # 标题井号
+    t = re.sub(r'^\s*[-+]\s+', '', t, flags=re.M)        # 列表符号
+    t = re.sub(r'^\s*>\s?', '', t, flags=re.M)           # 引用
+    t = re.sub(r'[ \t]+\n', '\n', t)                     # 尾随空格
+    t = ''.join(c for c in t if not (
+        0x1F000 <= ord(c) <= 0x1FAFF or 0x2600 <= ord(c) <= 0x27BF
+        or ord(c) in (0xFE0F, 0x200D, 0x2B50, 0x2764)))  # emoji 及变体符
+    t = re.sub(r'\d', lambda m: _DIGITS[int(m.group())] + ' ', t)  # 数字逐位读
+    t = re.sub(r'[ \t]{2,}', ' ', t).strip()
+    return t
+
+
 def synth_wav(text, seed=0, best_of=BEST_OF_DEFAULT, instruct=None, temperature=None):
     """合成一句文本，返回 (wav_bytes, sample_rate)。
 
     best_of>1 时合成多条，自动挑中位音高最低的（用户偏好：越低沉越像御姐）。
     """
     global _last_used
+    text = _normalize_text(text)
     best_of = max(1, int(best_of or 1))
     t0 = time.time()
     best = (float('inf'), None, 0)  # (f0, wav_bytes, sr)
@@ -274,6 +300,7 @@ def synth_stream(text, seed=0, instruct=None, temperature=None, probe=True):
     global _last_used
     import numpy as np
     import torch
+    text = _normalize_text(text)
     max_attempts = 2 if probe else 1
     for attempt in range(1, max_attempts + 1):
         last = (attempt == max_attempts)
